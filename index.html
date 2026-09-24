@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 日語會話導師 (Live API 實作版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', 'Noto Sans JP', sans-serif; background-color: #f3f4f6; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .recording-active {
+            animation: pulse-ring 1.5s infinite;
+            background-color: #ef4444 !important;
+        }
+        
+        .typing-dot { animation: typing 1.4s infinite ease-in-out both; }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes typing {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body class="h-screen w-full flex flex-col items-center justify-center p-4">
+
+    <!-- API Key Input for testing -->
+    <div class="mb-4 w-full max-w-2xl bg-white p-4 rounded-xl shadow-sm flex gap-3 items-center">
+        <i class="fa-solid fa-key text-gray-400"></i>
+        <input type="password" id="apiKeyInput" placeholder="請輸入 Gemini API Key..." class="flex-1 outline-none border-b border-gray-200 focus:border-indigo-500 transition-colors text-sm py-1">
+    </div>
+
+    <div class="w-full max-w-2xl h-[75vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-gray-100">
+        
+        <!-- Header -->
+        <header class="bg-gradient-to-r from-indigo-50 to-blue-50 px-6 py-5 border-b border-gray-200 flex justify-between items-center shrink-0">
+            <div class="flex items-center gap-3">
+                <div class="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-2xl shadow-sm">🇯🇵</div>
+                <div>
+                    <h1 class="text-xl font-bold text-gray-800 tracking-tight">AI 日語會話導師</h1>
+                    <p class="text-xs text-gray-500 font-medium flex items-center gap-1 mt-0.5">
+                        <span id="statusIndicator" class="w-2 h-2 rounded-full bg-gray-400"></span>
+                        <span id="statusText">未連線</span>
+                    </p>
+                </div>
+            </div>
+            <button class="text-gray-400 hover:text-gray-600 transition-colors" onclick="resetChat()">
+                <i class="fa-solid fa-rotate-right text-xl"></i>
+            </button>
+        </header>
+
+        <!-- Chat Area -->
+        <main id="chatContainer" class="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50/50 no-scrollbar relative">
+            <div id="messageList" class="space-y-6"></div>
+            <div id="chatAnchor"></div>
+        </main>
+
+        <!-- Controls -->
+        <footer class="p-6 bg-white border-t border-gray-100 shrink-0 flex flex-col items-center justify-center shadow-[0_-10px_30px_-15px_rgba(0,0,0,0.05)] relative z-10">
+            <div id="transcriptionText" class="text-sm text-gray-500 mb-4 h-5 font-medium tracking-wide transition-opacity duration-300 opacity-0"></div>
+            
+            <button id="micButton" class="w-16 h-16 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full flex items-center justify-center text-2xl shadow-lg shadow-indigo-200 transition-all duration-300 transform hover:scale-105 active:scale-95 focus:outline-none">
+                <i id="micIcon" class="fa-solid fa-microphone"></i>
+            </button>
+            <p id="instructionText" class="text-xs text-gray-400 mt-3 font-medium">點擊連線並開始</p>
+        </footer>
+    </div>
+
+    <script>
+        const SYSTEM_INSTRUCTION = `
+**Role (角色設定):**
+你是一位具備多年教學經驗、母語為日語的專業會話導師。你的個性友善、充滿耐心。
+**Task (任務目標):**
+與學生進行自然、生活化的日語對話。聆聽學生的表達，並在對話過程中適度、溫和地糾正文法與用詞錯誤。
+**Guidelines (指導原則):**
+- 主要使用日語進行交流。僅在解釋複雜文法、糾正錯誤時輔以少量「繁體中文」。
+- 使用標準的「丁寧體 (です/ます)」。
+- 僅針對「影響語意理解」、「動詞/形容詞變化錯誤」或「助詞誤用」進行糾正。
+- 每次回覆的最後，提出一個與當前話題相關的開放式問題。
+**Output Format (輸出格式要求):**
+嚴格遵循以下結構：
+【フィードバック】若有明顯錯誤請在此指出並附中文解釋。若完美請給予日語稱讚。
+【先生の返事】針對學生的內容給予自然的日語回應。
+【あなたの番です】提出一個簡短的日語問題。
+        `;
+
+        // UI Elements
+        const micButton = document.getElementById('micButton');
+        const micIcon = document.getElementById('micIcon');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const messageList = document.getElementById('messageList');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const chatAnchor = document.getElementById('chatAnchor');
+        const transcriptionText = document.getElementById('transcriptionText');
+
+        // State
+        let isConnected = false;
+        let ws = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let sourceNode = null;
+        let workletNode = null;
+        
+        let currentAiMessageStr = ""; // Buffer for AI text chunks
+        let isReceivingAi = false;
+        let currentAiMessageEl = null;
+
+        // Utilities
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        // Web Audio API requires Float32 (-1.0 to 1.0)
+        function pcm16ToFloat32(pcmData) {
+            const view = new DataView(pcmData);
+            const float32 = new Float32Array(pcmData.byteLength / 2);
+            for (let i = 0; i < float32.length; i++) {
+                // Little-endian
+                const int16 = view.getInt16(i * 2, true);
+                float32[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+            }
+            return float32;
+        }
+
+        // Gemini Live API requires 16-bit PCM (Int16)
+        function float32ToPcm16(float32Array) {
+            const buffer = new ArrayBuffer(float32Array.length * 2);
+            const view = new DataView(buffer);
+            for (let i = 0; i < float32Array.length; i++) {
+                let s = Math.max(-1, Math.min(1, float32Array[i]));
+                view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            return buffer;
+        }
+
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            const len = bytes.byteLength;
+            for (let i = 0; i < len; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        function scrollToBottom() {
+            chatAnchor.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function appendUserMessage(text) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex items-end justify-end gap-3 mb-6 animate-[fadeIn_0.3s_ease-out]';
+            wrapper.innerHTML = `
+                <div class="bg-indigo-600 text-white p-3 rounded-2xl rounded-br-sm shadow-sm max-w-[80%] text-sm">
+                    <p class="leading-relaxed">${text}</p>
+                </div>
+            `;
+            messageList.appendChild(wrapper);
+            scrollToBottom();
+        }
+
+        function createAiMessageContainer() {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex items-end gap-3 mb-6 animate-[fadeIn_0.3s_ease-out] w-full';
+            wrapper.innerHTML = `
+                <div class="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-sm shrink-0 shadow-sm border border-indigo-200">👩‍🏫</div>
+                <div class="bg-white p-4 rounded-2xl rounded-bl-sm shadow-sm border border-gray-100 max-w-[85%] w-full content-area text-sm leading-relaxed whitespace-pre-line text-gray-800">
+                    <div class="typing-indicator flex gap-1 items-center h-[20px]">
+                        <div class="w-1.5 h-1.5 bg-indigo-400 rounded-full typing-dot"></div>
+                        <div class="w-1.5 h-1.5 bg-indigo-400 rounded-full typing-dot"></div>
+                        <div class="w-1.5 h-1.5 bg-indigo-400 rounded-full typing-dot"></div>
+                    </div>
+                </div>
+            `;
+            messageList.appendChild(wrapper);
+            scrollToBottom();
+            return wrapper.querySelector('.content-area');
+        }
+
+        function formatAiText(rawText) {
+            // Apply formatting based on the Persona instruction tags
+            let html = rawText
+                .replace(/【フィードバック】/g, '<span class="block mt-2 font-bold text-rose-600 text-xs mb-1">💡 フィードバック</span><span class="text-rose-800 bg-rose-50 p-2 rounded block mb-3 border border-rose-100">')
+                .replace(/【先生の返事】/g, '</span><span class="block font-bold text-indigo-700 text-xs mb-1">💬 先生の返事</span><span class="block mb-3">')
+                .replace(/【あなたの番です】/g, '</span><span class="block mt-3 font-bold text-green-700 text-xs mb-1">🎤 あなたの番です</span><span class="text-green-800 bg-green-50 p-2 rounded block border border-green-100 font-medium">');
+            
+            // Close any open spans at the end
+            if(html.includes('<span class="text-green-800')) html += '</span>';
+            else if(html.includes('<span class="block mb-3">')) html += '</span>';
+
+            return html;
+        }
+
+        // Audio Worklet Code (Blob for dynamic loading)
+        // Gemini strictly requires 16000Hz PCM
+        const workletCode = `
+        class PCMProcessor extends AudioWorkletProcessor {
+            constructor() {
+                super();
+            }
+            process(inputs, outputs, parameters) {
+                const input = inputs[0];
+                if (input.length > 0) {
+                    const channelData = input[0];
+                    // Post Float32 chunks back to main thread
+                    this.port.postMessage(channelData); 
+                }
+                return true;
+            }
+        }
+        registerProcessor('pcm-processor', PCMProcessor);
+        `;
+
+        async function startSession() {
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) {
+                alert("請輸入 API Key");
+                return;
+            }
+
+            statusIndicator.className = "w-2 h-2 rounded-full bg-yellow-500 animate-pulse";
+            statusText.textContent = "連線中...";
+
+            try {
+                // 1. Setup AudioContext (16kHz for Gemini)
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                
+                // Load Worklet
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const workletUrl = URL.createObjectURL(blob);
+                await audioContext.audioWorklet.addModule(workletUrl);
+
+                // 2. Setup WebSocket
+                const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    console.log("WebSocket connected.");
+                    isConnected = true;
+                    statusIndicator.className = "w-2 h-2 rounded-full bg-green-500";
+                    statusText.textContent = "通話中 (點擊紅麥克風結束)";
+                    
+                    micButton.classList.add('recording-active');
+                    micIcon.classList.remove('fa-microphone');
+                    micIcon.classList.add('fa-phone-slash');
+
+                    // Send Setup Message
+                    const setupMsg = {
+                        setup: {
+                            model: "models/gemini-2.0-flash-exp", // Or latest live model
+                            generationConfig: {
+                                responseModalities: ["AUDIO"],
+                                speechConfig: {
+                                    voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } // Japanese friendly voice
+                                }
+                            },
+                            systemInstruction: {
+                                parts: [{ text: SYSTEM_INSTRUCTION }]
+                            }
+                        }
+                    };
+                    ws.send(JSON.stringify(setupMsg));
+                    
+                    // Start Mic
+                    startMicRecording();
+                };
+
+                ws.onmessage = async (event) => {
+                    let response;
+                    if (event.data instanceof Blob) {
+                        const text = await event.data.text();
+                        response = JSON.parse(text);
+                    } else {
+                        response = JSON.parse(event.data);
+                    }
+                    
+                    if (response.serverContent) {
+                        const content = response.serverContent;
+                        
+                        // Handle Model output (Audio & Text)
+                        if (content.modelTurn) {
+                            if (!isReceivingAi) {
+                                isReceivingAi = true;
+                                currentAiMessageStr = "";
+                                currentAiMessageEl = createAiMessageContainer();
+                                transcriptionText.textContent = "AI 正在說話...";
+                                transcriptionText.classList.remove('opacity-0');
+                            }
+
+                            for (const part of content.modelTurn.parts) {
+                                // 1. Play Audio (24kHz from Gemini)
+                                if (part.inlineData && part.inlineData.data) {
+                                    const audioBuffer = base64ToArrayBuffer(part.inlineData.data);
+                                    const float32Data = pcm16ToFloat32(audioBuffer);
+                                    
+                                    // Gemini output is 24000Hz
+                                    const audioBuf = audioContext.createBuffer(1, float32Data.length, 24000);
+                                    audioBuf.getChannelData(0).set(float32Data);
+                                    
+                                    const source = audioContext.createBufferSource();
+                                    source.buffer = audioBuf;
+                                    source.connect(audioContext.destination);
+                                    source.start();
+                                }
+                                
+                                // 2. Display Text
+                                if (part.text) {
+                                    currentAiMessageStr += part.text;
+                                    if(currentAiMessageEl) {
+                                        currentAiMessageEl.innerHTML = formatAiText(currentAiMessageStr);
+                                    }
+                                    scrollToBottom();
+                                }
+                            }
+                        }
+
+                        // Handle User Transcription (Barge-in / Speech-to-text)
+                        if (content.interrupted) {
+                            console.log("AI was interrupted by user");
+                            // Logic to stop current playback could go here (requires tracking source nodes)
+                        }
+                    }
+                };
+
+                ws.onclose = () => {
+                    console.log("WebSocket closed.");
+                    stopSession();
+                };
+
+                ws.onerror = (error) => {
+                    console.error("WebSocket Error:", error);
+                    stopSession();
+                    alert("連線發生錯誤。請確認 API 金鑰是否正確，或網路狀態。");
+                };
+
+            } catch (err) {
+                console.error("Setup error:", err);
+                stopSession();
+                alert("無法存取麥克風或初始化音訊。");
+            }
+        }
+
+        async function startMicRecording() {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }});
+            
+            sourceNode = audioContext.createMediaStreamSource(mediaStream);
+            workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+            
+            sourceNode.connect(workletNode);
+            workletNode.connect(audioContext.destination); // Required to keep worklet alive
+
+            workletNode.port.onmessage = (event) => {
+                // Received Float32 chunk from Worklet
+                if (isConnected && ws.readyState === WebSocket.OPEN) {
+                    // When user speaks, Gemini considers the previous turn finished
+                    if (isReceivingAi) {
+                        isReceivingAi = false;
+                        transcriptionText.classList.add('opacity-0');
+                    }
+
+                    const float32Data = event.data;
+                    const pcm16Buffer = float32ToPcm16(float32Data);
+                    const base64Data = arrayBufferToBase64(pcm16Buffer);
+                    
+                    const msg = {
+                        realtimeInput: {
+                            mediaChunks: [{
+                                mimeType: "audio/pcm;rate=16000",
+                                data: base64Data
+                            }]
+                        }
+                    };
+                    ws.send(JSON.stringify(msg));
+                }
+            };
+        }
+
+        function stopSession() {
+            isConnected = false;
+            
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+            if (sourceNode) sourceNode.disconnect();
+            if (workletNode) workletNode.disconnect();
+            if (audioContext) audioContext.close();
+            if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+            
+            statusIndicator.className = "w-2 h-2 rounded-full bg-gray-400";
+            statusText.textContent = "已中斷連線";
+            
+            micButton.classList.remove('recording-active');
+            micIcon.classList.remove('fa-phone-slash');
+            micIcon.classList.add('fa-microphone');
+            transcriptionText.classList.add('opacity-0');
+            isReceivingAi = false;
+        }
+
+        // Event Listeners
+        micButton.addEventListener('click', () => {
+            if (isConnected) {
+                stopSession();
+            } else {
+                startSession();
+            }
+        });
+
+        function resetChat() {
+            if(isConnected) stopSession();
+            messageList.innerHTML = '';
+            currentAiMessageStr = '';
+            currentAiMessageEl = null;
+        }
+    </script>
+</body>
+</html>
