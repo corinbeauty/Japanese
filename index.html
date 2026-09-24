@@ -36,7 +36,10 @@
     <!-- API Key Input for testing -->
     <div class="mb-4 w-full max-w-2xl bg-white p-4 rounded-xl shadow-sm flex gap-3 items-center">
         <i class="fa-solid fa-key text-gray-400"></i>
-        <input type="password" id="apiKeyInput" placeholder="請輸入 Gemini API Key..." class="flex-1 outline-none border-b border-gray-200 focus:border-indigo-500 transition-colors text-sm py-1">
+        <input type="password" id="apiKeyInput" placeholder="請貼上您的 Gemini API Key..." class="flex-1 outline-none border-b border-gray-200 focus:border-indigo-500 transition-colors text-sm py-1">
+        <button id="saveApiKeyBtn" class="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-lg transition-colors shadow-sm whitespace-nowrap">
+            確認
+        </button>
     </div>
 
     <div class="w-full max-w-2xl h-[75vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-gray-100">
@@ -100,6 +103,7 @@
         const statusText = document.getElementById('statusText');
         const messageList = document.getElementById('messageList');
         const apiKeyInput = document.getElementById('apiKeyInput');
+        const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
         const chatAnchor = document.getElementById('chatAnchor');
         const transcriptionText = document.getElementById('transcriptionText');
 
@@ -423,6 +427,21 @@
             } else {
                 startSession();
             }
+        });
+
+        saveApiKeyBtn.addEventListener('click', () => {
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) {
+                alert("請先貼上 API Key！");
+                return;
+            }
+            saveApiKeyBtn.textContent = "已確認 ✔";
+            saveApiKeyBtn.classList.replace('bg-gray-800', 'bg-green-600');
+            saveApiKeyBtn.classList.replace('hover:bg-gray-700', 'hover:bg-green-500');
+            
+            setTimeout(() => {
+                alert("API Key 已就緒！請點擊下方的「麥克風按鈕」開始與 AI 老師通話。");
+            }, 100);
         });
 
         function resetChat() {
