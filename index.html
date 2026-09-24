@@ -245,10 +245,9 @@
                 // 1. Setup AudioContext (16kHz for Gemini)
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
                 
-                // Load Worklet
-                const blob = new Blob([workletCode], { type: 'application/javascript' });
-                const workletUrl = URL.createObjectURL(blob);
-                await audioContext.audioWorklet.addModule(workletUrl);
+                // 改用 Data URI 載入 Worklet，避免瀏覽器 iframe 中的 Blob CSP 限制
+                const workletDataUri = 'data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(workletCode)));
+                await audioContext.audioWorklet.addModule(workletDataUri);
 
                 // 2. Setup WebSocket
                 const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
@@ -267,7 +266,7 @@
                     // Send Setup Message
                     const setupMsg = {
                         setup: {
-                            model: "models/gemini-2.0-flash-exp", // Or latest live model
+                            model: "models/gemini-3.1-flash-live-preview", // 更新為最新 Live 模型
                             generationConfig: {
                                 responseModalities: ["AUDIO"],
                                 speechConfig: {
@@ -350,13 +349,19 @@
                 ws.onerror = (error) => {
                     console.error("WebSocket Error:", error);
                     stopSession();
-                    alert("連線發生錯誤。請確認 API 金鑰是否正確，或網路狀態。");
+                    alert("連線發生錯誤。可能是 API 金鑰無效，或網路連線中斷。");
                 };
 
             } catch (err) {
                 console.error("Setup error:", err);
                 stopSession();
-                alert("無法存取麥克風或初始化音訊。");
+                
+                // 加入詳細的錯誤攔截與提示
+                if (err.name === 'NotAllowedError' || err.name === 'NotFoundError') {
+                    alert("啟動失敗！無法存取麥克風。請確認瀏覽器已給予麥克風權限。");
+                } else {
+                    alert("初始化音訊失敗: " + err.message);
+                }
             }
         }
 
@@ -402,13 +407,27 @@
         function stopSession() {
             isConnected = false;
             
+            // 完整清除資源，避免下次啟動時卡住
             if (mediaStream) {
                 mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
             }
-            if (sourceNode) sourceNode.disconnect();
-            if (workletNode) workletNode.disconnect();
-            if (audioContext) audioContext.close();
-            if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+            if (sourceNode) {
+                sourceNode.disconnect();
+                sourceNode = null;
+            }
+            if (workletNode) {
+                workletNode.disconnect();
+                workletNode = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+            ws = null;
             
             statusIndicator.className = "w-2 h-2 rounded-full bg-gray-400";
             statusText.textContent = "已中斷連線";
